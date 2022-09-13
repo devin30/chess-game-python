@@ -1,3 +1,5 @@
+import copy
+from email.errors import NonPrintableDefect
 import enum
 import os
 from tkinter import PIESLICE
@@ -18,30 +20,15 @@ class Side(enum.Enum):
     BLACK = 2
 
 class BoardPiece:
-    def __init__(self, piece: PieceType, color: Side):
+    def __init__(self, piece: PieceType, color: Side, row, file):
         self.piece = piece
         self.color = color
-        self.last_move = -1  # for special moves like castling
+        self.last_move = 0  # for special moves like castling
         self.pawn_move_two = False  # was last move a pawn moving two squares
-
-    def remove(self):
-        self.piece = PieceType.NOPIECE
-        self.color = Side.NEUTRAL
-        self.last_move = -1
-        self.pawn_move_two = False
-
-    def replace(from_piece: "BoardPiece", to_piece: "BoardPiece", move_num,
-                pawn_move_two = False):
-        to_piece.piece = from_piece.piece
-        to_piece.color = from_piece.color
-        to_piece.last_move = move_num
-        to_piece.pawn_move_two = pawn_move_two
-        from_piece.piece = PieceType.NOPIECE
-        from_piece.color = Side.NEUTRAL
-        from_piece.last_move = -1
-        from_piece.pawn_move_two = False
-    
-
+        self.row = row
+        self.file = file
+        self.next: BoardPiece = None  # for linked list of pieces of the same side
+        self.prev: BoardPiece = None
 
 class ChessInputError(Exception):
     pass
@@ -97,11 +84,15 @@ class Chess:
         self.squares = [[],] * Chess.BOARD_SIZE  # square colours
         self.turn: Side = Chess.STARTING_PLAYER
         self.move_num = 1
+        self.piece_list = {Side.WHITE: None, Side.BLACK: None}
+        self.kings = {Side.WHITE: None, Side.BLACK: None}
 
         for i in range(Chess.BOARD_SIZE):
             self.board[i] = [None,] * Chess.BOARD_SIZE
             for j in range(Chess.BOARD_SIZE):
-                self.board[i][j] = BoardPiece(PieceType.NOPIECE, Side.NEUTRAL)
+                self.board[i][j] = BoardPiece(PieceType.NOPIECE,
+                                              Side.NEUTRAL,
+                                              i, j)
             self.squares[i] = [' ',] * Chess.BOARD_SIZE
             self.squares[i][(i % 2):Chess.BOARD_SIZE:2] = (
                 ['#',] * ((Chess.BOARD_SIZE + i%2) // 2))
@@ -110,10 +101,15 @@ class Chess:
         for piece_position in Chess.SETUP:
             (row, file, piece, color) = piece_position
             try:
-                self.board[row][file] = BoardPiece(piece, color)
+                self.add_piece(piece, color, row, file, 0)
+                if piece == PieceType.KING:
+                    self.kings[color] = self.board[row][file]
             except IndexError:
                 # Do nothing if out of range
                 pass
+        
+        assert(self.kings[Side.WHITE] is not None)
+        assert(self.kings[Side.BLACK] is not None)
 
     def print_board(self):
         print("")
@@ -211,6 +207,8 @@ class Chess:
     def make_move(self, from_row, from_file, to_row, to_file):
         valid_move = False
         is_pawn_move_two = False
+        passant_target: BoardPiece = None
+        general_error_msg = "Invalid move!"
 
         # check from and to are not same square
         if (from_row == to_row and from_file == to_file):
@@ -227,7 +225,6 @@ class Chess:
         row_diff = abs(to_row - from_row)
         file_diff = abs(to_file - from_file)
 
-        # TODO verify that move doesn't put own king in check
 
         # special rules for each piece
         if move_piece.piece == PieceType.PAWN and self.turn == Side.WHITE:
@@ -252,13 +249,11 @@ class Chess:
                 elif (from_row == black_pawn_row-2
                         and to_row == black_pawn_row-1
                         and file_diff == 1):
-                    passant_target: BoardPiece = self.board[to_row-1][to_file]
+                    passant_target = self.board[to_row-1][to_file]
                     if (passant_target.color == Side.BLACK
                             and passant_target.piece == PieceType.PAWN
                             and passant_target.last_move == self.move_num-1
                             and passant_target.pawn_move_two):
-                        # remove other pawn
-                        passant_target.remove()
                         valid_move = True
 
                 # allow moving one space forward
@@ -287,13 +282,11 @@ class Chess:
 
                 # allow en passant
                 elif from_row == 3 and to_row == 2 and file_diff == 1:
-                    passant_target: BoardPiece = self.board[to_row+1][to_file]
+                    passant_target = self.board[to_row+1][to_file]
                     if (passant_target.color == Side.WHITE
                             and passant_target.piece == PieceType.PAWN
                             and passant_target.last_move == self.move_num
                             and passant_target.pawn_move_two):
-                        # remove other pawn
-                        passant_target.remove()
                         valid_move = True
 
                 # allow moving one space forward
@@ -309,7 +302,7 @@ class Chess:
         elif move_piece.piece == PieceType.BISHOP:
             # check destination is diagonal
             if row_diff != file_diff:
-                raise ChessMoveError("Invalid move!")
+                raise ChessMoveError(general_error_msg)
             
             # check no other pieces in between
             row_step = 1 if to_row > from_row else -1
@@ -320,7 +313,7 @@ class Chess:
                 next_row += row_step
                 next_file += file_step
                 if self.board[next_row][next_file].piece != PieceType.NOPIECE:
-                    raise ChessMoveError("Invalid move!")
+                    raise ChessMoveError(general_error_msg)
             
             valid_move = True
 
@@ -331,15 +324,15 @@ class Chess:
                 for next_file in range(from_file+1, to_file):
                     if (self.board[from_row][next_file].piece
                             != PieceType.NOPIECE):
-                        raise ChessMoveError("Invalid move!") 
+                        raise ChessMoveError(general_error_msg)
             elif file_diff == 0:
                 # check no other pieces in between
                 for next_row in range(from_row+1, to_row):
                     if (self.board[from_file][next_row].piece
                             != PieceType.NOPIECE):
-                        raise ChessMoveError("Invalid move!") 
+                        raise ChessMoveError(general_error_msg)
             else:
-                raise ChessMoveError("Invalid move!")
+                raise ChessMoveError(general_error_msg)
             valid_move = True
 
         elif move_piece.piece == PieceType.QUEEN:
@@ -359,7 +352,7 @@ class Chess:
                 file_step = 1 if to_file > from_file else -1
                 row_step = 1 if to_row > from_row else -1
             else:
-                raise ChessMoveError("Invalid move!")
+                raise ChessMoveError(general_error_msg)
 
             # check no other pieces in between
             next_row = from_row
@@ -368,25 +361,84 @@ class Chess:
                 next_row += row_step
                 next_file += file_step
                 if self.board[next_row][next_file].piece != PieceType.NOPIECE:
-                    raise ChessMoveError("Invalid move!")
+                    raise ChessMoveError(general_error_msg)
             valid_move = True
 
         elif move_piece.piece == PieceType.KING:
             # check destination is only one square away in any direction
-            if row_diff <= 1 and file_diff <= 1:
-                valid_move = True
+            if row_diff > 1 or file_diff > 1:
+                raise ChessMoveError(general_error_msg)
 
-        if valid_move:
-            BoardPiece.replace(
-                self.board[from_row][from_file],
-                self.board[to_row][to_file],
-                self.move_num,
-                is_pawn_move_two
-            )
-            return
-        else:
-            raise ChessMoveError("Invalid move!")
+            # verify that king does not move into check
+
+            # castling
+            valid_move = True
+
+        if not valid_move:
+            raise ChessMoveError(general_error_msg)
+        
+        self.move_piece(from_row, from_file, to_row, to_file, is_pawn_move_two)
+
+        # TODO verify that move doesn't put own king in check
+        if passant_target is not None:
+            passant_target.remove()
     
+    def remove_piece(self, piece_row, piece_file):
+        target_piece = self.board[piece_row][piece_file]
+        if target_piece.piece != PieceType.NOPIECE:
+            if target_piece.prev is None:  # is head of list
+                self.piece_list[target_piece.color] = target_piece.next
+            else:  # is not head of list
+                target_piece.prev.next = target_piece.next
+            if target_piece.next is not None:
+                target_piece.next.prev = None
+            target_piece.next = None
+            target_piece.prev = None
+            target_piece.piece = PieceType.NOPIECE
+            target_piece.color = Side.NEUTRAL
+            target_piece.last_move = 0
+            target_piece.pawn_move_two = False
+    
+    def add_piece(self, piece: PieceType, color: Side,
+                  row, file, last_move=None, pawn_move_two=False):
+        # adding new piece to the board
+        self.remove_piece(row, file)
+        new_square = self.board[row][file]
+        new_square.piece = piece
+        new_square.color = color
+        if last_move is None:
+            new_square.last_move = self.move_num
+        else:
+            new_square.last_move = last_move
+        new_square.pawn_move_two = pawn_move_two
+        # add to head of piece list
+        old_head = self.piece_list[color]
+        if old_head is not None:
+            old_head.prev = new_square
+            new_square.next = old_head
+        new_square.prev = None
+        self.piece_list[color] = new_square
+    
+    def move_piece(self, from_row, from_file, to_row, to_file,
+                   is_pawn_move_two=False):
+        self.remove_piece(to_row, to_file)
+        from_piece = self.board[from_row][from_file]
+        self.add_piece(from_piece.piece, from_piece.color, to_row, to_file,
+                       pawn_move_two = is_pawn_move_two)
+        self.remove_piece(from_row, from_file)
+
+    def is_square_attacked(self, target_row, target_file, by_side: Side):
+        # check if attacked by pawns of that side
+
+        # check if attacked by another King
+
+        # check if attacked orthogonally by Rook or Queen
+
+        # check if attacked diagonally by Bishop or Queen
+
+        # check if attacked by Knights
+        pass
+
     def is_check():
         pass
 
