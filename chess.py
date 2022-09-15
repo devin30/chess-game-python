@@ -3,7 +3,7 @@ from email.errors import NonPrintableDefect
 import enum
 import os
 from tkinter import PIESLICE
-from typing import List
+from typing import List, Optional
 
 class PieceType(enum.IntEnum):
     NOPIECE = 0
@@ -84,7 +84,8 @@ class Chess:
         self.squares = [[],] * Chess.BOARD_SIZE  # square colours
         self.turn: Side = Chess.STARTING_PLAYER
         self.move_num = 1
-        self.piece_list = {Side.WHITE: None, Side.BLACK: None}
+        self.piece_list: dict[Side, Optional[BoardPiece]] = {
+            Side.WHITE: None, Side.BLACK: None}
         self.kings = {Side.WHITE: None, Side.BLACK: None}
 
         for i in range(Chess.BOARD_SIZE):
@@ -183,7 +184,7 @@ class Chess:
             # check if pawn can be queened
 
             break
-        
+
         if self.turn == Side.WHITE:
             self.turn = Side.BLACK
         else:
@@ -207,7 +208,10 @@ class Chess:
     def make_move(self, from_row, from_file, to_row, to_file):
         valid_move = False
         is_pawn_move_two = False
-        passant_target: BoardPiece = None
+        passant_target: Optional[BoardPiece] = None
+        kingside_castling_rook: Optional[BoardPiece] = None
+        queenside_castling_rook: Optional[BoardPiece] = None
+        other_side = Side.WHITE if self.turn == Side.BLACK else Side.BLACK
         general_error_msg = "Invalid move!"
 
         # check from and to are not same square
@@ -321,14 +325,17 @@ class Chess:
             # check destination is orthogonal
             if row_diff == 0:
                 # check no other pieces in between
-                for next_file in range(from_file+1, to_file):
+                file_step = 1 if to_file > from_file else -1
+                for next_file in range(from_file+file_step,
+                                       to_file, file_step):
                     if (self.board[from_row][next_file].piece
                             != PieceType.NOPIECE):
                         raise ChessMoveError(general_error_msg)
             elif file_diff == 0:
                 # check no other pieces in between
-                for next_row in range(from_row+1, to_row):
-                    if (self.board[from_file][next_row].piece
+                row_step = 1 if to_row > from_row else -1
+                for next_row in range(from_row+row_step, to_row, row_step):
+                    if (self.board[next_row][from_file].piece
                             != PieceType.NOPIECE):
                         raise ChessMoveError(general_error_msg)
             else:
@@ -365,23 +372,80 @@ class Chess:
             valid_move = True
 
         elif move_piece.piece == PieceType.KING:
+            # check if castling
+            if move_piece.last_move == 0:
+                # Kingside castling
+                if to_file == from_file+2:
+                    castling_rook = self.board[from_row][from_file+3]
+                    if (castling_rook.piece == PieceType.ROOK
+                            and castling_rook.color == self.turn
+                            and castling_rook.last_move == 0
+                            and self.board[from_row][from_file+1].piece
+                                == PieceType.NOPIECE):
+                        if self.is_square_attacked(from_row, from_file+1,
+                                                   other_side):
+                            raise ChessMoveError("Cannot castle through check")
+                        kingside_castling_rook = castling_rook
+                
+                # Queenside castling
+                if to_file == from_file-2:
+                    castling_rook = self.board[from_row][from_file-4]
+                    if (castling_rook.piece == PieceType.ROOK
+                            and castling_rook.color == self.turn
+                            and castling_rook.last_move == 0
+                            and self.board[from_row][from_file-1].piece
+                                == PieceType.NOPIECE
+                            and self.board[from_row][from_file-3].piece
+                                == PieceType.NOPIECE):
+                        if self.is_square_attacked(from_row, from_file+1,
+                                                   other_side):
+                            raise ChessMoveError("Cannot castle through check")
+                        queenside_castling_rook = castling_rook
+                
             # check destination is only one square away in any direction
-            if row_diff > 1 or file_diff > 1:
+            elif row_diff > 1 or file_diff > 1:
                 raise ChessMoveError(general_error_msg)
 
             # verify that king does not move into check
+            if self.is_square_attacked(to_row, to_file, other_side):
+                raise ChessMoveError("Cannot move King into check!")
 
-            # castling
             valid_move = True
 
         if not valid_move:
             raise ChessMoveError(general_error_msg)
         
+        # save pieces before moving with shallow copies
+        from_piece_copy = copy.copy(self.board[from_row][from_file])
+        to_piece_copy = copy.copy(self.board[to_row][to_file])
         self.move_piece(from_row, from_file, to_row, to_file, is_pawn_move_two)
 
-        # TODO verify that move doesn't put own king in check
+        # check that this move has not exposed king to check
+        if self.is_square_attacked(self.kings[self.turn].row,
+                                   self.kings[self.turn].file,
+                                   other_side):
+            # reset pieces to previous move and then raise error
+            self.move_piece(to_row, to_file, from_row, from_file,
+                            from_piece_copy.pawn_move_two)
+            self.board[from_row][from_file].last_move = \
+                from_piece_copy.last_move
+            if to_piece_copy.piece != PieceType.NOPIECE:
+                self.add_piece(to_piece_copy.piece, to_piece_copy.color,
+                               to_row, to_file, to_piece_copy.last_move,
+                               to_piece_copy.pawn_move_two)
+            raise ChessMoveError("Cannot put own King into check")
+
         if passant_target is not None:
             passant_target.remove()
+        if kingside_castling_rook is not None:
+            self.move_piece(kingside_castling_rook.row,
+                            kingside_castling_rook.file,
+                            to_row, to_file-1)
+        if queenside_castling_rook is not None:
+            self.move_piece(queenside_castling_rook.row,
+                            queenside_castling_rook.file,
+                            to_row, to_file+1)
+
     
     def remove_piece(self, piece_row, piece_file):
         target_piece = self.board[piece_row][piece_file]
@@ -425,19 +489,85 @@ class Chess:
         from_piece = self.board[from_row][from_file]
         self.add_piece(from_piece.piece, from_piece.color, to_row, to_file,
                        pawn_move_two = is_pawn_move_two)
+        if from_piece.piece == PieceType.KING:
+            self.kings[from_piece.color] = self.board[to_row][to_file]
         self.remove_piece(from_row, from_file)
 
     def is_square_attacked(self, target_row, target_file, by_side: Side):
-        # check if attacked by pawns of that side
+        pieces = self.piece_list[by_side]
 
-        # check if attacked by another King
+        while pieces is not None:
+            row_diff = abs(target_row - pieces.row)
+            file_diff = abs(target_file - pieces.file)
 
-        # check if attacked orthogonally by Rook or Queen
+            if pieces.piece == PieceType.PAWN:
+                # check if attacked by pawns
+                if file_diff == 1:
+                    if by_side == Side.BLACK and pieces.row-1 == target_row:
+                        return True
+                    elif by_side == Side.WHITE and pieces.row+1 == target_row:
+                        return True
 
-        # check if attacked diagonally by Bishop or Queen
+            if pieces.piece == PieceType.KING:
+                # check if attacked by another King
+                if file_diff <= 1 and row_diff <= 1:
+                    return True
 
-        # check if attacked by Knights
-        pass
+            if pieces.piece in [PieceType.QUEEN, PieceType.ROOK]:
+                # check if attacked orthogonally by Rook or Queen
+                if row_diff == 0:
+                    # check no other pieces in between
+                    blocked = False
+                    file_step = 1 if target_file > pieces.file else -1
+                    for next_file in range(pieces.file+file_step,
+                                           target_file, file_step):
+                        if (self.board[target_row][next_file].piece
+                                != PieceType.NOPIECE):
+                            blocked = True
+                            break
+                    if not blocked:
+                        return True
+                elif file_diff == 0:
+                    blocked = False
+                    row_step = 1 if target_row > pieces.row else -1
+                    for next_row in range(pieces.row+row_step,
+                                          target_row, row_step):
+                        if (self.board[next_row][target_file].piece
+                                != PieceType.NOPIECE):
+                            blocked = True
+                            break
+                    if not blocked:
+                        return True
+
+            if pieces.piece in [PieceType.QUEEN, PieceType.BISHOP]:
+                # check if attacked diagonally by Bishop or Queen
+                if row_diff == file_diff:
+                    # check no other pieces in between
+                    row_step = 1 if target_row > pieces.row else -1
+                    file_step = 1 if target_file > pieces.file else -1
+                    next_row = pieces.row
+                    next_file = pieces.file
+                    blocked = False
+                    for i in range(1, row_diff):
+                        next_row += row_step
+                        next_file += file_step
+                        if (self.board[next_row][next_file].piece
+                                != PieceType.NOPIECE):
+                            blocked = True
+                            break
+                    if not blocked:
+                        return True
+
+            # check if attacked by Knights
+            if pieces.piece == PieceType.KNIGHT:
+                if ((row_diff == 1 and file_diff == 2)
+                        or (row_diff == 2 and file_diff == 1)):
+                    return True
+
+            # Go to next piece
+            pieces = pieces.next
+        
+        return False
 
     def is_check():
         pass
