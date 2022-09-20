@@ -75,8 +75,10 @@ class Chess:
         (6, 7, PieceType.PAWN, Side.BLACK),
     ]
 
-    WHITE_PIECES = [' ', 'P', 'N', 'B', 'R', 'Q', 'K']
-    BLACK_PIECES = [' ', 'p', 'n', 'b', 'r', 'q', 'k']
+    WHITE_PIECES = [' ', '\u2659', '\u2658', '\u2657',
+                    '\u2656', '\u2655', '\u2654']
+    BLACK_PIECES = [' ', '\u265f', '\u265e', '\u265d',
+                    '\u265c', '\u265b', '\u265a']
     STARTING_PLAYER = Side.WHITE
 
     def __init__(self):
@@ -153,43 +155,21 @@ class Chess:
         else:
             print("Black to move:")
 
-        while True:
-            try:
-                print("Enter position of piece to move (e.g. a1)")
-                piece_pos = input(">>> ")
-                (piece_row, piece_file) = Chess.parse_position(piece_pos)
-                if (self.board[piece_row][piece_file].piece ==
-                        PieceType.NOPIECE):
-                    raise ChessInputError("No piece there!")
-                if self.board[piece_row][piece_file].color != self.turn:
-                    raise ChessInputError("Not your piece!")
-            except ChessInputError as e:
-                print(e)
-                continue
+        print("Enter position of piece to move (e.g. a1)")
+        piece_pos = input(">>> ")
+        (piece_row, piece_file) = Chess.parse_position(piece_pos)
+        if (self.board[piece_row][piece_file].piece ==
+                PieceType.NOPIECE):
+            raise ChessInputError("No piece there!")
+        if self.board[piece_row][piece_file].color != self.turn:
+            raise ChessInputError("Not your piece!")
 
-            try:
-                print("Enter position to move to")
-                dest_pos = input(">>> ")
-                (dest_row, dest_file) = Chess.parse_position(dest_pos)
-            except ChessInputError as e:
-                print(e)
-                continue
-        
-            # Move piece
-            try:
-                self.make_move(piece_row, piece_file, dest_row, dest_file)
-            except ChessMoveError as e:
-                print(e)
-                continue
-            # check if pawn can be queened
+        print("Enter position to move to")
+        dest_pos = input(">>> ")
+        (dest_row, dest_file) = Chess.parse_position(dest_pos)
 
-            break
+        return (piece_row, piece_file, dest_row, dest_file)
 
-        if self.turn == Side.WHITE:
-            self.turn = Side.BLACK
-        else:
-            self.turn = Side.WHITE
-            self.move_num += 1
         
     
     def parse_position(input_text: str):
@@ -445,6 +425,32 @@ class Chess:
             self.move_piece(queenside_castling_rook.row,
                             queenside_castling_rook.file,
                             to_row, to_file+1)
+        
+        # Check if pawn can be queened
+        after_move = self.board[to_row][to_file]
+        if after_move.piece == PieceType.PAWN:
+            if ((after_move.color == Side.WHITE
+                    and to_row == self.BOARD_SIZE-1)
+                    or (after_move.color == Side.BLACK and to_row == 1)):
+                while True:
+                    new_piece = input(
+                        ">>> Choose piece to replace pawn (Q/R/B/N)")
+                    match new_piece:
+                        case 'Q' | 'q':
+                            after_move.piece = PieceType.QUEEN
+                            break
+                        case 'R' | 'r':
+                            after_move.piece = PieceType.ROOK
+                            break
+                        case 'B' | 'b':
+                            after_move.piece = PieceType.BISHOP
+                            break
+                        case 'N' | 'n':
+                            after_move.piece = PieceType.KNIGHT
+                            break
+                        case _:
+                            print("Invalid piece")
+                            continue
 
     
     def remove_piece(self, piece_row, piece_file):
@@ -579,8 +585,31 @@ class Chess:
         pass
     
     def run(self):
+        os.system('cls' if os.name == 'nt' else 'clear')
+        print("")  # leaving room for messages
         while True:
+            while True:
+                self.print_board()
+                print("")
+                try:
+                    (from_row, from_file, to_row, to_file) = self.input_move()
+                    # Move piece
+                    self.make_move(from_row, from_file, to_row, to_file)
+                except ChessInputError as e:
+                    os.system('cls' if os.name == 'nt' else 'clear')
+                    print(e)
+                    continue
+                except ChessMoveError as e:
+                    os.system('cls' if os.name == 'nt' else 'clear')
+                    print(e)
+                    continue
+                break
+
+            if self.turn == Side.WHITE:
+                self.turn = Side.BLACK
+            else:
+                self.turn = Side.WHITE
+                self.move_num += 1
+
             os.system('cls' if os.name == 'nt' else 'clear')
-            self.print_board()
-            print("")
-            self.input_move()
+            print("")  # leaving room for messages
